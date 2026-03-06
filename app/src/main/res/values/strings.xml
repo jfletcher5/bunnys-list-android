@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Bunny\'s List</string>
+    <string name="widget_title">Needed Items</string>
+    <string name="widget_subtitle">Tap + Add to add quickly</string>
+    <string name="widget_description">Shows needed grocery items with quick add.</string>
+    <string name="widget_loading_text">Loading needed items...</string>
+    <string name="widget_empty_text">No needed items right now.</string>
+    <string name="widget_error_text">Could not load items. Tap Refresh.</string>
+    <string name="widget_refresh">Refresh</string>
+    <string name="widget_add">+ Add</string>
 </resources>

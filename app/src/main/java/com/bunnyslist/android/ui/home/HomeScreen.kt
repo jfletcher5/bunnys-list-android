@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,6 +43,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -56,6 +58,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -66,6 +69,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -88,7 +92,7 @@ import kotlinx.coroutines.launch
  * Nav host wrapper so the app can grow beyond the single-screen MVP cleanly.
  */
 @Composable
-fun BunnysListApp() {
+fun BunnysListApp(openAddDialogSignal: Int = 0) {
     val navController = rememberNavController()
 
     NavHost(
@@ -109,6 +113,7 @@ fun BunnysListApp() {
             HomeScreen(
                 uiState = uiState,
                 snackbarHostState = snackbarHostState,
+                openAddDialogSignal = openAddDialogSignal,
                 onSearchQueryChange = viewModel::updateSearchQuery,
                 onFilterSelected = viewModel::updateFilter,
                 onToggleNeeded = viewModel::toggleNeeded,
@@ -127,6 +132,7 @@ fun BunnysListApp() {
 private fun HomeScreen(
     uiState: HomeUiState,
     snackbarHostState: SnackbarHostState,
+    openAddDialogSignal: Int,
     onSearchQueryChange: (String) -> Unit,
     onFilterSelected: (HomeFilter) -> Unit,
     onToggleNeeded: (GroceryItem) -> Unit,
@@ -142,9 +148,19 @@ private fun HomeScreen(
     val expandedItems = remember { mutableStateMapOf<String, Boolean>() }
     val coroutineScope = rememberCoroutineScope()
 
+    // External entry points (like widgets) can bump this signal to open Add Item immediately.
+    LaunchedEffect(openAddDialogSignal) {
+        if (openAddDialogSignal > 0) {
+            showAddDialog = true
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                ),
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -155,7 +171,17 @@ private fun HomeScreen(
                             contentDescription = null,
                             modifier = Modifier.height(32.dp),
                         )
-                        Text("Bunny's Grocery List")
+                        Column {
+                            Text(
+                                text = "Bunny's Grocery List",
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                            Text(
+                                text = "Hop through your list faster",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 },
             )
@@ -163,7 +189,11 @@ private fun HomeScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { showAddDialog = true },
-                modifier = Modifier.navigationBarsPadding(),
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .offset(y = 8.dp),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Add item")
             }
@@ -173,7 +203,15 @@ private fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surface)
+                // Soft gradient background gives the home screen more visual depth.
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surface,
+                            MaterialTheme.colorScheme.surfaceContainer,
+                        ),
+                    ),
+                )
                 .padding(innerPadding)
                 .padding(horizontal = 16.dp),
         ) {
@@ -207,10 +245,15 @@ private fun HomeScreen(
                     } else {
                         null
                     },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                    ),
                     singleLine = true,
                 )
 
-                // A compact needed filter button keeps the top bar dense on phones.
+                // Needed toggle is high-contrast when selected and quiet otherwise.
                 FilledTonalIconButton(
                     onClick = {
                         onFilterSelected(
@@ -221,6 +264,13 @@ private fun HomeScreen(
                             },
                         )
                     },
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = if (uiState.selectedFilter == HomeFilter.Needed) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                    ),
                 ) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
@@ -240,7 +290,7 @@ private fun HomeScreen(
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 96.dp, top = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(
                         items = uiState.filteredItems,
@@ -421,6 +471,15 @@ private fun GroceryItemCard(
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(18.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = if (item.need) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+            },
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onExpandedChange(!expanded) },
@@ -466,7 +525,14 @@ private fun GroceryItemCard(
                     } else {
                         androidx.compose.material3.AssistChipDefaults.assistChipColors()
                     },
-                    border = null,
+                    border = androidx.compose.material3.AssistChipDefaults.assistChipBorder(
+                        enabled = true,
+                        borderColor = if (item.need) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                        } else {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                        },
+                    ),
                 )
 
                 Icon(
@@ -579,7 +645,7 @@ private fun ItemEditorDialog(
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
+            color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
@@ -592,7 +658,17 @@ private fun ItemEditorDialog(
                     text = title,
                     style = MaterialTheme.typography.headlineSmall,
                 )
+                Text(
+                    text = if (title == "Add Item") {
+                        "Capture it quickly and keep your list organized."
+                    } else {
+                        "Update details and save your changes."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
+                // Core input group for item details.
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     OutlinedTextField(
                         value = name,
@@ -602,6 +678,10 @@ private fun ItemEditorDialog(
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                         shape = RoundedCornerShape(12.dp),
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        ),
                     )
 
                     OutlinedTextField(
@@ -611,6 +691,10 @@ private fun ItemEditorDialog(
                         label = { Text("Description (optional)") },
                         minLines = 3,
                         shape = RoundedCornerShape(12.dp),
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        ),
                     )
 
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
