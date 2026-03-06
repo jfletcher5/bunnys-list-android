@@ -1,0 +1,4 @@
+# Copy this file to local.properties on your machine and update the values.
+# Keep the real local.properties uncommitted because it contains machine-specific paths.
+
+sdk.dir=/Users/yourname/Library/Android/sdk
