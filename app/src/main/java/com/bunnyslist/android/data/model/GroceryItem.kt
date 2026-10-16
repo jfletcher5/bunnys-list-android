@@ -3,11 +3,11 @@ package com.bunnyslist.android.data.model
 import java.util.Date
 
 /**
- * Native model that mirrors the current web app Firestore document shape.
+ * Item stored at users/{uid}/items/{firestoreId}.
  *
- * Note:
- * `itemCategory` intentionally stores the category ID as a string because the
- * web app persists it that way today.
+ * [itemCategory] is the category document id for categories created on
+ * Android. Migrated web documents may still store the old numeric category
+ * id as a string; [GroceryCategory.matchesReference] accepts both.
  */
 data class GroceryItem(
     val firestoreId: String,
@@ -17,4 +17,13 @@ data class GroceryItem(
     val lastUpdated: Date,
     val isOwned: Boolean,
     val need: Boolean,
-)
+) {
+    /** Snapshot stored on the action log. lastUpdated is applied at write time. */
+    fun toFieldMap(): Map<String, Any> = mapOf(
+        "name" to name,
+        "description" to description,
+        "itemCategory" to itemCategory,
+        "isOwned" to isOwned,
+        "need" to need,
+    )
+}

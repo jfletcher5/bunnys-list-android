@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.bunnyslist.android.data.model.GroceryCategory
 import com.bunnyslist.android.data.model.GroceryItem
+import com.bunnyslist.android.data.model.ListFieldLimits
 import com.bunnyslist.android.data.repository.GroceryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.Date
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,12 +16,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import java.util.Date
 
 /**
- * ViewModel that translates Firestore data into screen-ready state.
+ * ViewModel that translates the signed-in user's Firestore data into
+ * screen-ready state. Listeners start only after the auth gate creates this
+ * ViewModel, so we never subscribe anonymously.
  */
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -50,14 +52,12 @@ class HomeViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(selectedFilter = filter)
     }
 
-    fun toggleNeeded(item: GroceryItem) {
-        viewModelScope.launch {
-            runCatching {
-                repository.updateNeededStatus(item.firestoreId, !item.need)
-            }.onFailure {
-                emitMessage("Failed to update item status.")
-            }
-        }
+    suspend fun setNeeded(item: GroceryItem, needed: Boolean): Boolean {
+        return runCatching {
+            repository.updateNeededStatus(item, needed)
+        }.onFailure {
+            emitMessage("Failed to update item status.")
+        }.isSuccess
     }
 
     fun addItem(
@@ -67,15 +67,8 @@ class HomeViewModel @Inject constructor(
         needed: Boolean,
     ) {
         val trimmedName = name.trim()
-        if (trimmedName.isBlank()) {
-            emitMessage("Item name is required.")
-            return
-        }
-
-        if (categoryId.isBlank()) {
-            emitMessage("Choose a category before saving the item.")
-            return
-        }
+        val trimmedDescription = description.trim()
+        if (!validateItem(trimmedName, trimmedDescription, categoryId)) return
 
         viewModelScope.launch {
             runCatching {
@@ -83,7 +76,7 @@ class HomeViewModel @Inject constructor(
                     GroceryItem(
                         firestoreId = "",
                         name = trimmedName,
-                        description = description.trim(),
+                        description = trimmedDescription,
                         itemCategory = categoryId,
                         lastUpdated = Date(),
                         isOwned = true,
@@ -105,22 +98,16 @@ class HomeViewModel @Inject constructor(
         categoryId: String,
     ) {
         val trimmedName = name.trim()
-        if (trimmedName.isBlank()) {
-            emitMessage("Item name is required.")
-            return
-        }
-
-        if (categoryId.isBlank()) {
-            emitMessage("Choose a category before saving the item.")
-            return
-        }
+        val trimmedDescription = description.trim()
+        if (!validateItem(trimmedName, trimmedDescription, categoryId)) return
 
         viewModelScope.launch {
             runCatching {
                 repository.updateItem(
-                    original.copy(
+                    original = original,
+                    updated = original.copy(
                         name = trimmedName,
-                        description = description.trim(),
+                        description = trimmedDescription,
                         itemCategory = categoryId,
                         lastUpdated = Date(),
                     ),
@@ -135,7 +122,7 @@ class HomeViewModel @Inject constructor(
 
     suspend fun deleteItem(item: GroceryItem): GroceryItem? {
         return runCatching {
-            repository.deleteItem(item.firestoreId)
+            repository.deleteItem(item)
             item
         }.onFailure {
             emitMessage("Failed to delete item.")
@@ -145,7 +132,8 @@ class HomeViewModel @Inject constructor(
     fun undoDelete(item: GroceryItem) {
         viewModelScope.launch {
             runCatching {
-                repository.addItem(item.copy(firestoreId = "", lastUpdated = Date()))
+                // Restore the deleted document id. Do not add() a new one.
+                repository.restoreItem(item)
             }.onSuccess {
                 emitMessage("${item.name} restored.")
             }.onFailure {
@@ -160,21 +148,47 @@ class HomeViewModel @Inject constructor(
             emitMessage("Category name is required.")
             return null
         }
+        if (trimmedName.length > ListFieldLimits.CATEGORY_NAME_MAX) {
+            emitMessage("Category name must be ${ListFieldLimits.CATEGORY_NAME_MAX} characters or fewer.")
+            return null
+        }
 
         if (_uiState.value.categories.any { it.itemCategory.equals(trimmedName, ignoreCase = true) }) {
             emitMessage("That category already exists.")
             return null
         }
 
-        val nextId = (_uiState.value.categories.maxOfOrNull(GroceryCategory::id) ?: 0) + 1
-
         return runCatching {
-            repository.addCategory(trimmedName, nextId)
+            repository.addCategory(trimmedName)
         }.onSuccess {
             emitMessage("Category added.")
         }.onFailure {
             emitMessage("Failed to add category.")
         }.getOrNull()
+    }
+
+    private fun validateItem(name: String, description: String, categoryId: String): Boolean {
+        if (name.isBlank()) {
+            emitMessage("Item name is required.")
+            return false
+        }
+        if (name.length > ListFieldLimits.NAME_MAX) {
+            emitMessage("Item name must be ${ListFieldLimits.NAME_MAX} characters or fewer.")
+            return false
+        }
+        if (description.length > ListFieldLimits.DESCRIPTION_MAX) {
+            emitMessage("Description must be ${ListFieldLimits.DESCRIPTION_MAX} characters or fewer.")
+            return false
+        }
+        if (categoryId.isBlank()) {
+            emitMessage("Choose a category before saving the item.")
+            return false
+        }
+        if (categoryId.length > ListFieldLimits.CATEGORY_REF_MAX) {
+            emitMessage("Choose a category before saving the item.")
+            return false
+        }
+        return true
     }
 
     private fun observeItems() {

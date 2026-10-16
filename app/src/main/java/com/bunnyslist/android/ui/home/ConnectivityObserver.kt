@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.callbackFlow
  */
 @Singleton
 class ConnectivityObserver @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
 ) {
     fun observe(): Flow<Boolean> = callbackFlow {
         val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager

@@ -1,5 +1,6 @@
 package com.bunnyslist.android.di
 
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import dagger.Module
 import dagger.Provides
@@ -8,8 +9,8 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 /**
- * Firebase is now configured through the standard Android Google Services flow,
- * so Hilt only needs to expose the already-initialized Firestore instance.
+ * Firebase is configured through google-services.json. Hilt only exposes the
+ * already-initialized Auth and Firestore instances.
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -17,7 +18,9 @@ object FirebaseModule {
 
     @Provides
     @Singleton
-    fun provideFirestore(): FirebaseFirestore {
-        return FirebaseFirestore.getInstance()
-    }
+    fun provideFirebaseAuth(): FirebaseAuth = FirebaseAuth.getInstance()
+
+    @Provides
+    @Singleton
+    fun provideFirestore(): FirebaseFirestore = FirebaseFirestore.getInstance()
 }

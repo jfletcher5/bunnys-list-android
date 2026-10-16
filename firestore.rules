@@ -1,0 +1,230 @@
+rules_version = '2';
+
+// ===============================================================
+// Prototype security rules for Bunny's List Android.
+// Review these before deploying. They are a starting point, not a
+// guarantee. Deploying them denies the old top-level items and
+// categories collections. Copy that data under users/{uid} first.
+// See the README migration note.
+//
+// Edition: the Android client uses the standard Firestore SDK
+// (com.google.firebase.firestore.FirebaseFirestore). This environment
+// could not list databases because the Firebase CLI is not signed in,
+// so the edition was not confirmed remotely. Do not treat that as a
+// new-database request.
+//
+// Tradeoff: path ownership (users/{uid}/...) is simple and keeps each
+// account private. Bunny's List is a shared grocery list, so a later
+// households/{householdId} model with an explicit members map is a
+// better fit once more than one person needs the same list. That
+// needs an invite flow these rules do not implement.
+//
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users/{userId}/items
+// Document ID: Firestore auto-id, preserved on undo/restore
+// Fields:
+//   - name: string (required, 1..120)
+//   - description: string (required, 0..1000, may be empty)
+//   - itemCategory: string (required, 1..128) category document id,
+//     or a legacy numeric id stored as a string
+//   - isOwned: bool (required)
+//   - need: bool (required)
+//   - lastUpdated: timestamp (required, must be request.time via
+//     FieldValue.serverTimestamp())
+//
+// Collection: users/{userId}/categories
+// Document ID: Firestore auto-id (not a client max+1)
+// Fields:
+//   - itemCategory: string (required, 1..80) display name
+//   - lastUpdated: timestamp (required, request.time)
+//   - id: number (optional, 0..1000000) legacy web id, immutable
+//
+// Collection: users/{userId}/actions
+// Document ID: Firestore auto-id, append-only
+// Fields:
+//   - actorUid: string (required, must equal request.auth.uid)
+//   - actorName: string (required, 1..80) denormalized display name
+//   - action: string (required) add | edit | delete | toggle_needed |
+//     add_category | undo
+//   - targetType: string (required) item | category
+//   - targetId: string (required, 1..128)
+//   - before: map (optional) item or category snapshot
+//   - after: map (optional) item or category snapshot
+//   - createdAt: timestamp (required, request.time)
+//
+// There is no users/{userId} profile document. Email is not stored.
+// The parent document is not required for these subcollections; the
+// uid in the path is the authorization boundary.
+//
+// Queries the client runs, all under the signed-in user's path:
+//   - items orderBy name
+//   - categories orderBy itemCategory
+//   - items where need == true (widget)
+//   - actions orderBy createdAt desc limit 50
+// Single-field indexes cover these. No composite index is required.
+//
+// lastUpdated and createdAt must equal request.time. The client sends
+// FieldValue.serverTimestamp(), which the rules engine sees as
+// request.time even when an offline write syncs later. A client-chosen
+// timestamp would let someone backdate history, so that is rejected.
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Included so a future uid field cannot be pointed at someone else.
+    // Current item and category documents do not store uid; the path is
+    // the owner. Actions store actorUid and check it directly.
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) ||
+        request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+        request.resource.data.uid == resource.data.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidItem(data) {
+      return data.keys().hasOnly(['name', 'description', 'itemCategory', 'isOwned', 'need', 'lastUpdated'])
+        && data.keys().hasAll(['name', 'description', 'itemCategory', 'isOwned', 'need', 'lastUpdated'])
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 120
+        && data.description is string
+        && data.description.size() <= 1000
+        && data.itemCategory is string
+        && data.itemCategory.size() > 0
+        && data.itemCategory.size() <= 128
+        && data.isOwned is bool
+        && data.need is bool
+        && data.lastUpdated == request.time;
+    }
+
+    function legacyIdOk(data) {
+      return !('id' in data) || (data.id is number && data.id >= 0 && data.id <= 1000000);
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasOnly(['itemCategory', 'lastUpdated', 'id'])
+        && data.keys().hasAll(['itemCategory', 'lastUpdated'])
+        && data.itemCategory is string
+        && data.itemCategory.size() > 0
+        && data.itemCategory.size() <= 80
+        && data.lastUpdated == request.time
+        && legacyIdOk(data);
+    }
+
+    // A migrated numeric id can be kept, but not added, removed, or changed.
+    function legacyIdUnchanged() {
+      return (!('id' in resource.data) && !('id' in request.resource.data))
+        || (('id' in resource.data)
+            && ('id' in request.resource.data)
+            && request.resource.data.id == resource.data.id);
+    }
+
+    function isValidItemSnapshot(data) {
+      return data is map
+        && data.keys().hasOnly(['name', 'description', 'itemCategory', 'isOwned', 'need'])
+        && data.keys().hasAll(['name', 'description', 'itemCategory', 'isOwned', 'need'])
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 120
+        && data.description is string
+        && data.description.size() <= 1000
+        && data.itemCategory is string
+        && data.itemCategory.size() > 0
+        && data.itemCategory.size() <= 128
+        && data.isOwned is bool
+        && data.need is bool;
+    }
+
+    function isValidCategorySnapshot(data) {
+      return data is map
+        && data.keys().hasOnly(['itemCategory', 'id'])
+        && data.keys().hasAll(['itemCategory'])
+        && data.itemCategory is string
+        && data.itemCategory.size() > 0
+        && data.itemCategory.size() <= 80
+        && legacyIdOk(data);
+    }
+
+    function optionalSnapshot(data, field, targetType) {
+      return !(field in data)
+        || (targetType == 'item' && isValidItemSnapshot(data[field]))
+        || (targetType == 'category' && isValidCategorySnapshot(data[field]));
+    }
+
+    function isValidAction(data) {
+      return data.keys().hasOnly(['actorUid', 'actorName', 'action', 'targetType', 'targetId', 'before', 'after', 'createdAt'])
+        && data.keys().hasAll(['actorUid', 'actorName', 'action', 'targetType', 'targetId', 'createdAt'])
+        && data.actorUid is string
+        && data.actorUid == request.auth.uid
+        && data.actorUid.size() > 0
+        && data.actorUid.size() <= 128
+        && data.actorName is string
+        && data.actorName.size() > 0
+        && data.actorName.size() <= 80
+        && data.action in ['add', 'edit', 'delete', 'toggle_needed', 'add_category', 'undo']
+        && data.targetType in ['item', 'category']
+        && data.targetId is string
+        && data.targetId.size() > 0
+        && data.targetId.size() <= 128
+        && data.createdAt == request.time
+        && optionalSnapshot(data, 'before', data.targetType)
+        && optionalSnapshot(data, 'after', data.targetType)
+        && uidUnchanged();
+    }
+
+    // Old shared collections. Default deny already covers them; these
+    // matches make the migration boundary obvious.
+    match /items/{itemId} {
+      allow read, write: if false;
+    }
+
+    match /categories/{categoryId} {
+      allow read, write: if false;
+    }
+
+    match /users/{userId} {
+      match /items/{itemId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidItem(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      match /categories/{categoryId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidCategory(request.resource.data);
+        allow update: if isOwner(userId)
+          && isValidCategory(request.resource.data)
+          && legacyIdUnchanged();
+        allow delete: if isOwner(userId);
+      }
+
+      // Append-only changelog. Owners cannot edit or delete history rows.
+      match /actions/{actionId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidAction(request.resource.data);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

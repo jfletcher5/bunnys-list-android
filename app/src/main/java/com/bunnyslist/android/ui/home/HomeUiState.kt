@@ -48,8 +48,10 @@ data class HomeUiState(
         }
 
     fun categoryFor(item: GroceryItem): GroceryCategory? {
+        // New items store the category document id. Migrated items may still
+        // store the old numeric id, which matchesReference also accepts.
         return categories.firstOrNull { category ->
-            category.id.toString() == item.itemCategory
+            category.matchesReference(item.itemCategory)
         }
     }
 }
