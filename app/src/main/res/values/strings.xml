@@ -6,6 +6,7 @@
     <string name="widget_description">Shows needed grocery items with quick add.</string>
     <string name="widget_loading_text">Loading needed items...</string>
     <string name="widget_empty_text">No needed items right now.</string>
+    <string name="widget_signed_out_text">Sign in to see your list.</string>
     <string name="widget_error_text">Could not load items. Tap Refresh.</string>
     <string name="widget_refresh">Refresh</string>
     <string name="widget_add">+ Add</string>

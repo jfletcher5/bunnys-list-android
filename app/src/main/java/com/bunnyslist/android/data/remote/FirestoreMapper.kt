@@ -1,6 +1,7 @@
 package com.bunnyslist.android.data.remote
 
 import android.util.Log
+import com.bunnyslist.android.data.model.ActionLogEntry
 import com.bunnyslist.android.data.model.GroceryCategory
 import com.bunnyslist.android.data.model.GroceryItem
 import com.google.firebase.Timestamp
@@ -8,8 +9,8 @@ import com.google.firebase.firestore.DocumentSnapshot
 import java.util.Date
 
 /**
- * Centralized Firestore mapping keeps field names aligned with the web app and
- * makes it easier to evolve both clients together.
+ * Centralized Firestore mapping keeps field names aligned with the rules file
+ * and makes malformed production documents skippable instead of fatal.
  */
 fun DocumentSnapshot.toGroceryItem(): GroceryItem {
     val lastUpdated = (get("lastUpdated") as? Timestamp)?.toDate() ?: Date()
@@ -27,19 +28,33 @@ fun DocumentSnapshot.toGroceryItem(): GroceryItem {
 
 fun DocumentSnapshot.toGroceryCategory(): GroceryCategory {
     val lastUpdated = (get("lastUpdated") as? Timestamp)?.toDate() ?: Date()
-    val categoryId = when (val rawId = get("id")) {
-        // The live Firestore data is not perfectly normalized yet, so Android
-        // accepts either a numeric ID or the string form of that same ID.
+    val legacyId = when (val rawId = get("id")) {
+        // Older web writes used a numeric id. New Android categories omit it.
         is Number -> rawId.toInt()
-        is String -> rawId.toIntOrNull() ?: 0
-        else -> 0
+        is String -> rawId.toIntOrNull()
+        else -> null
     }
 
     return GroceryCategory(
         firestoreId = id,
-        id = categoryId,
         itemCategory = getString("itemCategory").orEmpty(),
         lastUpdated = lastUpdated,
+        legacyId = legacyId,
+    )
+}
+
+fun DocumentSnapshot.toActionLogEntry(): ActionLogEntry {
+    val createdAt = (get("createdAt") as? Timestamp)?.toDate() ?: Date()
+    return ActionLogEntry(
+        id = id,
+        actorUid = getString("actorUid").orEmpty(),
+        actorName = getString("actorName").orEmpty().ifBlank { "You" },
+        action = getString("action").orEmpty(),
+        targetType = getString("targetType").orEmpty(),
+        targetId = getString("targetId").orEmpty(),
+        before = snapshotMap("before"),
+        after = snapshotMap("after"),
+        createdAt = createdAt,
     )
 }
 
@@ -55,10 +70,14 @@ private fun DocumentSnapshot.getFlexibleString(fieldName: String): String {
     }
 }
 
-/**
- * Converts a Firestore document and logs the issue instead of crashing if the
- * document shape is malformed in production data.
- */
+private fun DocumentSnapshot.snapshotMap(field: String): Map<String, Any>? {
+    val raw = get(field) as? Map<*, *> ?: return null
+    return raw.entries.mapNotNull { (key, value) ->
+        val name = key as? String ?: return@mapNotNull null
+        if (value == null) null else name to value
+    }.toMap().ifEmpty { null }
+}
+
 fun DocumentSnapshot.toGroceryItemOrNull(): GroceryItem? {
     return runCatching(::toGroceryItem).getOrElse { error ->
         Log.w("FirestoreMapper", "Skipping invalid item document $id", error)
@@ -66,13 +85,16 @@ fun DocumentSnapshot.toGroceryItemOrNull(): GroceryItem? {
     }
 }
 
-/**
- * Converts category documents defensively because the live backend contains
- * mixed field types from older writes.
- */
 fun DocumentSnapshot.toGroceryCategoryOrNull(): GroceryCategory? {
     return runCatching(::toGroceryCategory).getOrElse { error ->
         Log.w("FirestoreMapper", "Skipping invalid category document $id", error)
+        null
+    }
+}
+
+fun DocumentSnapshot.toActionLogEntryOrNull(): ActionLogEntry? {
+    return runCatching(::toActionLogEntry).getOrElse { error ->
+        Log.w("FirestoreMapper", "Skipping invalid action document $id", error)
         null
     }
 }

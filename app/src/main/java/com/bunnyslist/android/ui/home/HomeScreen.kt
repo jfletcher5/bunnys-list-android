@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShoppingCart
@@ -49,10 +51,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -70,6 +70,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -84,15 +85,34 @@ import androidx.navigation.compose.rememberNavController
 import com.bunnyslist.android.R
 import com.bunnyslist.android.data.model.GroceryCategory
 import com.bunnyslist.android.data.model.GroceryItem
+import com.bunnyslist.android.ui.auth.AuthViewModel
+import com.bunnyslist.android.ui.auth.SignInScreen
+import com.bunnyslist.android.ui.auth.findActivity
+import com.bunnyslist.android.ui.common.showTimedUndoSnackbar
+import com.bunnyslist.android.ui.history.HistoryRoute
 import java.text.DateFormat
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 /**
- * Nav host wrapper so the app can grow beyond the single-screen MVP cleanly.
+ * Auth gate, then the grocery list and history. The list is not composed
+ * until Firebase Auth has a user, so Firestore listeners never run signed out.
  */
 @Composable
 fun BunnysListApp(openAddDialogSignal: Int = 0) {
+    val authViewModel: AuthViewModel = hiltViewModel()
+    val authState by authViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    if (!authState.isSignedIn) {
+        SignInScreen(
+            isSigningIn = authState.isSigningIn,
+            errorMessage = authState.errorMessage,
+            onSignIn = { authViewModel.signIn(context.findActivity()) },
+        )
+        return
+    }
+
     val navController = rememberNavController()
 
     NavHost(
@@ -116,33 +136,41 @@ fun BunnysListApp(openAddDialogSignal: Int = 0) {
                 openAddDialogSignal = openAddDialogSignal,
                 onSearchQueryChange = viewModel::updateSearchQuery,
                 onFilterSelected = viewModel::updateFilter,
-                onToggleNeeded = viewModel::toggleNeeded,
+                onSetNeeded = viewModel::setNeeded,
                 onAddItem = viewModel::addItem,
                 onUpdateItem = viewModel::updateItem,
                 onDeleteItem = viewModel::deleteItem,
                 onUndoDelete = viewModel::undoDelete,
                 onAddCategory = viewModel::addCategory,
+                onOpenHistory = { navController.navigate("history") },
+                onSignOut = authViewModel::signOut,
             )
+        }
+        composable("history") {
+            HistoryRoute(onBack = { navController.popBackStack() })
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeScreen(
+internal fun HomeScreen(
     uiState: HomeUiState,
     snackbarHostState: SnackbarHostState,
     openAddDialogSignal: Int,
     onSearchQueryChange: (String) -> Unit,
     onFilterSelected: (HomeFilter) -> Unit,
-    onToggleNeeded: (GroceryItem) -> Unit,
+    onSetNeeded: suspend (GroceryItem, Boolean) -> Boolean,
     onAddItem: (String, String, String, Boolean) -> Unit,
     onUpdateItem: (GroceryItem, String, String, String) -> Unit,
     onDeleteItem: suspend (GroceryItem) -> GroceryItem?,
     onUndoDelete: (GroceryItem) -> Unit,
     onAddCategory: suspend (String) -> GroceryCategory?,
+    onOpenHistory: () -> Unit,
+    onSignOut: () -> Unit,
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
+    var confirmSignOut by remember { mutableStateOf(false) }
     var itemBeingEdited by remember { mutableStateOf<GroceryItem?>(null) }
     var itemPendingDelete by remember { mutableStateOf<GroceryItem?>(null) }
     val expandedItems = remember { mutableStateMapOf<String, Boolean>() }
@@ -161,6 +189,14 @@ private fun HomeScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                 ),
+                actions = {
+                    IconButton(onClick = onOpenHistory) {
+                        Icon(Icons.Default.History, contentDescription = "History")
+                    }
+                    IconButton(onClick = { confirmSignOut = true }) {
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Sign out")
+                    }
+                },
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -303,7 +339,22 @@ private fun HomeScreen(
                             onExpandedChange = { expanded ->
                                 expandedItems[item.firestoreId] = expanded
                             },
-                            onToggleNeeded = { onToggleNeeded(item) },
+                            onToggleNeeded = {
+                                val previousNeed = item.need
+                                coroutineScope.launch {
+                                    val updated = onSetNeeded(item, !previousNeed)
+                                    if (!updated) return@launch
+                                    val message = if (previousNeed) {
+                                        "${item.name} marked as got it"
+                                    } else {
+                                        "${item.name} marked as needed"
+                                    }
+                                    // The Needed chip stays undoable for about five seconds.
+                                    if (showTimedUndoSnackbar(snackbarHostState, message)) {
+                                        onSetNeeded(item.copy(need = !previousNeed), previousNeed)
+                                    }
+                                }
+                            },
                             onEditClick = { itemBeingEdited = item },
                             onDeleteClick = { itemPendingDelete = item },
                         )
@@ -346,6 +397,27 @@ private fun HomeScreen(
         )
     }
 
+    if (confirmSignOut) {
+        AlertDialog(
+            onDismissRequest = { confirmSignOut = false },
+            title = { Text("Sign out?") },
+            text = { Text("You can sign back in with Google. Your list stays in your account.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmSignOut = false
+                    onSignOut()
+                }) {
+                    Text("Sign out")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSignOut = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     itemPendingDelete?.let { item ->
         ConfirmDeleteDialog(
             item = item,
@@ -354,12 +426,7 @@ private fun HomeScreen(
                 itemPendingDelete = null
                 coroutineScope.launch {
                     val deleted = onDeleteItem(item) ?: return@launch
-                    val result = snackbarHostState.showSnackbar(
-                        message = "${deleted.name} deleted",
-                        actionLabel = "Undo",
-                        duration = SnackbarDuration.Short,
-                    )
-                    if (result == SnackbarResult.ActionPerformed) {
+                    if (showTimedUndoSnackbar(snackbarHostState, "${deleted.name} deleted")) {
                         onUndoDelete(deleted)
                     }
                 }
@@ -634,7 +701,7 @@ private fun ItemEditorDialog(
     var description by remember(initialDescription) { mutableStateOf(initialDescription) }
     var selectedCategoryId by remember(initialCategoryId, categories) {
         mutableStateOf(
-            initialCategoryId.ifBlank { categories.firstOrNull()?.id?.toString().orEmpty() },
+            initialCategoryId.ifBlank { categories.firstOrNull()?.firestoreId.orEmpty() },
         )
     }
     var needed by remember(initialNeeded) { mutableStateOf(initialNeeded) }
@@ -735,7 +802,7 @@ private fun ItemEditorDialog(
                                 shape = RoundedCornerShape(12.dp),
                             ) {
                                 Text(
-                                    categories.firstOrNull { it.id.toString() == selectedCategoryId }?.itemCategory
+                                    categories.firstOrNull { it.matchesReference(selectedCategoryId) }?.itemCategory
                                         ?: "Select a category",
                                 )
                             }
@@ -748,7 +815,7 @@ private fun ItemEditorDialog(
                                     androidx.compose.material3.DropdownMenuItem(
                                         text = { Text(category.itemCategory) },
                                         onClick = {
-                                            selectedCategoryId = category.id.toString()
+                                            selectedCategoryId = category.firestoreId
                                             categoryMenuExpanded = false
                                         },
                                     )
@@ -830,7 +897,7 @@ private fun ItemEditorDialog(
             onConfirm = { categoryName ->
                 coroutineScope.launch {
                     val createdCategory = onAddCategory(categoryName) ?: return@launch
-                    selectedCategoryId = createdCategory.id.toString()
+                    selectedCategoryId = createdCategory.firestoreId
                     showCategoryDialog = false
                 }
             },
